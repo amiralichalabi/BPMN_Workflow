@@ -1,0 +1,14 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image (compiles the .NET app and fetches the editor bundle)
+        run: docker build -t bpmn-studio .
+      - name: Start and smoke-test
+        run: |
+          ADMIN_PASSWORD=ci-password-12345 docker compose up -d --build
+          for i in $(seq 1 30); do curl -fs localhost:8080/health && break; sleep 2; done
+          ADMIN_PASSWORD=ci-password-12345 bash scripts/smoke.sh

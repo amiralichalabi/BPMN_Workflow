@@ -1,0 +1,1 @@
+window.BpmnViewer = window.BpmnJS;

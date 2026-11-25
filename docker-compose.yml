@@ -1,0 +1,19 @@
+services:
+  studio:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      AdminPassword: ${ADMIN_PASSWORD:-}
+      BehindProxy: ${BEHIND_PROXY:-false}
+    volumes:
+      - studio-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+volumes:
+  studio-data: {}

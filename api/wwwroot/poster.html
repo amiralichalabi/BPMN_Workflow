@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>پوستر فرایند</title>
+<link rel="stylesheet" href="/lib/17.11.1/assets/diagram-js.css">
+<link rel="stylesheet" href="/lib/17.11.1/assets/bpmn-js.css">
+<link rel="stylesheet" href="/lib/17.11.1/assets/bpmn-font/css/bpmn.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="poster">
+  <div class="tools">
+    <button class="btn small" id="b-print">چاپ / PDF</button>
+    <button class="btn small" id="b-svg">SVG</button>
+    <button class="btn small" id="b-png">PNG</button>
+    <button class="btn small" id="b-full">تمام‌صفحه</button>
+  </div>
+  <header><h1 id="title">…</h1><div class="info" id="info"></div></header>
+  <div class="canvas" id="canvas"></div>
+  <section class="legend"><h2>راهنمای علامت‌ها (استاندارد BPMN 2.0)</h2><div class="lv" id="legend"></div></section>
+</div>
+<script src="/lib/17.11.1/bpmn-navigated-viewer.production.min.js"></script>
+<script src="/common.js"></script>
+<script src="/poster.js"></script>
+</body>
+</html>
