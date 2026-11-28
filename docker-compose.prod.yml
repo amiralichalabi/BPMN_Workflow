@@ -1,0 +1,18 @@
+# Production: your own SQL Server (no database container). Put Caddy/Nginx (HTTPS) in front and set BEHIND_PROXY=true.
+services:
+  studio:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"   # reachable only from this machine: the reverse proxy is the only way in
+    environment:
+      ConnectionStrings__Default: ${CONNECTION_STRING:?set CONNECTION_STRING in .env}
+      AdminPassword: ${ADMIN_PASSWORD:-}
+      BehindProxy: ${BEHIND_PROXY:-true}
+      EmbedOrigins: ${EMBED_ORIGINS:-}
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped

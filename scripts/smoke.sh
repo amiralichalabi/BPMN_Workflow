@@ -13,7 +13,7 @@ check "POST without X-Studio header rejected" "$(code -X POST $BASE/api/auth/log
 check "wrong password rejected"              "$(code -X POST $BASE/api/auth/login -H 'X-Studio: 1' -H 'Content-Type: application/json' -d '{"username":"admin","password":"wrong-password"}')" 401
 check "login ok"                             "$(code -c $JAR -X POST $BASE/api/auth/login -H 'X-Studio: 1' -H 'Content-Type: application/json' -d "{\"username\":\"admin\",\"password\":\"$PW\"}")" 200
 
-ID=$(curl -s -b $JAR -X POST $BASE/api/diagrams -H 'X-Studio: 1' -H 'Content-Type: application/json' -d '{"title":"smoke test"}' | sed -E 's/.*"id":"([^"]+)".*/\1/')
+ID=$(curl -s -b $JAR -X POST $BASE/api/diagrams -H 'X-Studio: 1' -H 'Content-Type: application/json' -d '{"title":"smoke test","system":"smoke"}' | sed -E 's/.*"id":"([^"]+)".*/\1/')
 check "diagram created (v1)"                 "$(code -b $JAR $BASE/api/diagrams/$ID/versions/1)" 200
 check "stale save is rejected (409)"         "$(code -b $JAR -X POST $BASE/api/diagrams/$ID/versions -H 'X-Studio: 1' -H 'Content-Type: application/json' -d '{"xml":"x","message":"m","baseVersion":99}')" 409
 check "invalid XML is rejected"              "$(code -b $JAR -X POST $BASE/api/diagrams/$ID/versions -H 'X-Studio: 1' -H 'Content-Type: application/json' -d '{"xml":"<not-bpmn/>","message":"m","baseVersion":1}')" 400

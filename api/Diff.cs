@@ -12,6 +12,7 @@ public static class BpmnDiff
     static readonly XNamespace M = "http://www.omg.org/spec/BPMN/20100524/MODEL";
     static readonly XNamespace Di = "http://www.omg.org/spec/BPMN/20100524/DI";
     static readonly XNamespace Dc = "http://www.omg.org/spec/DD/20100524/DC";
+    static readonly XNamespace Studio = "http://bpmn-studio.local/schema";
     static readonly HashSet<string> IgnoredAttrs =
         ["id", "name", "exporter", "exporterVersion", "expressionLanguage", "typeLanguage", "targetNamespace"];
 
@@ -44,7 +45,15 @@ public static class BpmnDiff
             var defs = e.Elements().Where(x => x.Name.Namespace == M && x.Name.LocalName.EndsWith("EventDefinition"))
                 .Select(x => x.Name.LocalName).OrderBy(x => x).ToList();
             if (defs.Count > 0) props["eventDefinition"] = string.Join(",", defs);
-            nodes[id] = new Node(e.Name.LocalName, (string?)e.Attribute("name"), props, null);
+            var studioEl = e.Element(M + "extensionElements")?.Elements().FirstOrDefault(x => x.Name.Namespace == Studio);
+            var kind = studioEl?.Name.LocalName;
+            var typeName = kind == "image" ? "studioImage" : kind == "header" ? "studioHeader" : e.Name.LocalName;
+            if (kind == "image")   // compare the picture by hash, never by its (huge) data URI
+                props["image"] = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                    System.Text.Encoding.UTF8.GetBytes(studioEl!.Attribute("src")?.Value ?? ""))).ToLowerInvariant()[..12];
+            var text = e.Element(M + "text")?.Value.Trim();
+            if (text != null) props["text"] = text;
+            nodes[id] = new Node(typeName, (string?)e.Attribute("name"), props, null);
         }
         foreach (var s in doc.Descendants(Di + "BPMNShape"))
         {

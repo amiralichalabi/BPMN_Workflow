@@ -9,31 +9,31 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 
-var builder = WebApplication.CreateBuilder(args);
-var dataDir = builder.Configuration["DataDir"] ?? "/data";
-Directory.CreateDirectory(dataDir);
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, ContentRootPath = AppContext.BaseDirectory });
+if (OperatingSystem.IsWindows() && string.IsNullOrEmpty(builder.Configuration["urls"]))
+    builder.WebHost.UseUrls("http://127.0.0.1:8080");   // local test: reachable only from this computer
 var behindProxy = builder.Configuration.GetValue<bool>("BehindProxy");
+var embedOrigins = (builder.Configuration["EmbedOrigins"] ?? "")
+    .Split([',', ' '], StringSplitOptions.RemoveEmptyEntries)
+    .Where(o => Uri.TryCreate(o, UriKind.Absolute, out var u) && (u.Scheme is "https" or "http") && u.AbsolutePath == "/" && !o.Contains('*'))
+    .Select(o => o.TrimEnd('/')).ToArray();
 
-builder.Services.AddDbContext<AppDb>(o => o.UseSqlite($"Data Source={Path.Combine(dataDir, "studio.db")}"));
-builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataDir, "keys")));
+var connString = builder.Configuration.GetConnectionString("Default")
+    ?? throw new InvalidOperationException("ConnectionStrings:Default is not configured (SQL Server).");
+builder.Services.AddDbContext<AppDb>(o => o.UseSqlServer(connString, sql => sql.EnableRetryOnFailure(5, TimeSpan.FromSeconds(5), null)));
+// Cookie-encryption keys live in the database too: any number of app instances share them and restarts keep sessions.
+builder.Services.AddDataProtection().SetApplicationName("bpmn-studio").PersistKeysToDbContext<AppDb>();
 builder.Services.AddMemoryCache();
 builder.Services.AddResponseCompression(o =>
 {
     o.EnableForHttps = true;
     o.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(["image/svg+xml", "application/xml", "text/css", "text/javascript"]);
 });
-if (behindProxy)
-    builder.Services.Configure<ForwardedHeadersOptions>(o =>
-    {
-        o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost;
-        o.KnownNetworks.Clear();
-        o.KnownProxies.Clear();
-    });
-
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(o =>
 {
     o.Cookie.Name = "studio.sid";
@@ -85,8 +85,20 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDb>();
-    await db.Database.EnsureCreatedAsync();
-    foreach (var sql in AppDb.HardeningSql) await db.Database.ExecuteSqlRawAsync(sql);
+    for (var attempt = 1; ; attempt++)   // SQL Server may still be starting
+    {
+        try
+        {
+            await db.Database.EnsureCreatedAsync();
+            foreach (var sql in AppDb.HardeningSql) await db.Database.ExecuteSqlRawAsync(sql);
+            break;
+        }
+        catch (Exception ex) when (attempt < 30)
+        {
+            app.Logger.LogWarning("Database not ready (attempt {Attempt}/30): {Message}", attempt, ex.Message);
+            await Task.Delay(3000);
+        }
+    }
     if (!await db.Users.AnyAsync())
     {
         var configured = builder.Configuration["AdminPassword"];
@@ -100,16 +112,34 @@ using (var scope = app.Services.CreateScope())
 }
 
 // ---------- middleware ----------
-if (behindProxy) app.UseForwardedHeaders();
+if (behindProxy)
+{
+    // Only enable behind a reverse proxy that is the sole way to reach this port (Caddy/Nginx/Codespaces):
+    // takes scheme, host and client IP from the proxy's X-Forwarded-* headers.
+    app.Use((ctx, next) =>
+    {
+        var proto = ctx.Request.Headers["X-Forwarded-Proto"].ToString().Split(',')[0].Trim();
+        if (proto is "https" or "http") ctx.Request.Scheme = proto;
+        var fhost = ctx.Request.Headers["X-Forwarded-Host"].ToString().Split(',')[0].Trim();
+        if (fhost.Length is > 0 and < 256) ctx.Request.Host = new HostString(fhost);
+        var ip = ctx.Request.Headers["X-Forwarded-For"].ToString().Split(',')[0].Trim();
+        if (System.Net.IPAddress.TryParse(ip, out var addr)) ctx.Connection.RemoteIpAddress = addr;
+        return next();
+    });
+}
 app.UseResponseCompression();
 app.Use(async (ctx, next) =>
 {
     var h = ctx.Response.Headers;
     h["X-Content-Type-Options"] = "nosniff";
-    h["X-Frame-Options"] = "DENY";
     h["Referrer-Policy"] = "no-referrer";
     h["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
-    h["Content-Security-Policy"] = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+    // Only the read-only poster page may be embedded, and only by origins listed in EmbedOrigins.
+    var frameAncestors = "'none'";
+    if (embedOrigins.Length > 0 && ctx.Request.Path.Equals("/poster.html", StringComparison.OrdinalIgnoreCase))
+        frameAncestors = "'self' " + string.Join(' ', embedOrigins);
+    else h["X-Frame-Options"] = "DENY";
+    h["Content-Security-Policy"] = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors " + frameAncestors + "; base-uri 'none'; form-action 'self'";
     if (ctx.Request.Path.StartsWithSegments("/api"))
     {
         h["Cache-Control"] = "no-store";
@@ -138,6 +168,13 @@ app.UseStaticFiles(new StaticFileOptions
 });
 app.UseAuthentication();
 app.UseAuthorization();
+
+if (OperatingSystem.IsWindows())
+    app.Lifetime.ApplicationStarted.Register(() =>
+    {
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("http://127.0.0.1:8080") { UseShellExecute = true }); }
+        catch { /* browser could not be opened: user can open the address manually */ }
+    });
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 
@@ -227,30 +264,27 @@ app.MapGet("/api/audit", async (AppDb db) =>
     .RequireAuthorization("Admin");
 
 // ---------- diagrams ----------
-app.MapGet("/api/diagrams", async (string? q, AppDb db) =>
+app.MapGet("/api/diagrams", async (AppDb db) =>
 {
-    var query = db.Diagrams.AsNoTracking().Where(d => !d.Archived);
-    if (!string.IsNullOrWhiteSpace(q))
-    {
-        var like = $"%{q.Trim().Replace("%", "").Replace("_", "")}%";
-        query = query.Where(d => EF.Functions.Like(d.Title, like) || EF.Functions.Like(d.Description, like));
-    }
-    var rows = await query.OrderByDescending(d => d.UpdatedAt).Take(200).ToListAsync();
-    return Results.Ok(rows.Select(Dto));
+    var rows = await db.Diagrams.AsNoTracking().Where(d => !d.Archived).OrderByDescending(d => d.UpdatedAt).Take(500).ToListAsync();
+    return Results.Ok(rows.Select(Dto));   // searching/sorting happens in the browser: instant, no server round-trips
 });
+
+static string Clip(string? v, int max) { v = (v ?? "").Trim(); return v.Length > max ? v[..max] : v; }
 
 app.MapPost("/api/diagrams", async (CreateDiagramRequest req, HttpContext ctx, AppDb db) =>
 {
-    var title = (req.Title ?? "").Trim();
-    if (title.Length is 0 or > 120) return Api.Err(400, "عنوان نمودار الزامی است (حداکثر ۱۲۰ نویسه)");
+    var title = Clip(req.Title, 120);
+    var system = Clip(req.SystemName, 80);
+    if (title.Length == 0) return Api.Err(400, "نام گردش کار الزامی است");
+    if (system.Length == 0) return Api.Err(400, "سامانه (پروژه) الزامی است");
     var xml = string.IsNullOrWhiteSpace(req.Xml) ? XmlGuard.Blank() : req.Xml;
     if (XmlGuard.Validate(xml) is { } err) return Api.Err(400, err);
     var user = Api.UserName(ctx);
     var d = new Diagram
     {
-        Title = title,
-        Description = (req.Description ?? "").Trim()[..Math.Min(500, (req.Description ?? "").Trim().Length)],
-        CreatedBy = user, UpdatedBy = user, HeadVersion = 1
+        Title = title, SystemName = system, Actor = Clip(req.Actor, 80), Role = Clip(req.Role, 80),
+        Description = Clip(req.Description, 500), CreatedBy = user, UpdatedBy = user, HeadVersion = 1   // dates are set by the server
     };
     db.Diagrams.Add(d);
     db.Versions.Add(new DiagramVersion
@@ -259,7 +293,7 @@ app.MapPost("/api/diagrams", async (CreateDiagramRequest req, HttpContext ctx, A
         ContentHash = XmlGuard.Hash(xml), ParentHash = "", SizeBytes = xml.Length
     });
     await db.SaveChangesAsync();
-    await Audit.Log(db, ctx, "diagram_created", d.Id, new { title });
+    await Audit.Log(db, ctx, "diagram_created", d.Id, new { title, system });
     return Results.Ok(Dto(d));
 }).RequireAuthorization("Designer");
 
@@ -273,12 +307,15 @@ app.MapPatch("/api/diagrams/{id:guid}", async (Guid id, PatchDiagramRequest req,
 {
     var d = await db.Diagrams.FirstOrDefaultAsync(x => x.Id == id);
     if (d is null) return Api.Err(404, "نمودار یافت نشد");
-    var title = (req.Title ?? d.Title).Trim();
-    if (title.Length is 0 or > 120) return Api.Err(400, "عنوان نامعتبر است");
-    d.Title = title;
-    if (req.Description != null) d.Description = req.Description.Trim()[..Math.Min(500, req.Description.Trim().Length)];
+    var title = req.Title is null ? d.Title : Clip(req.Title, 120);
+    var system = req.SystemName is null ? d.SystemName : Clip(req.SystemName, 80);
+    if (title.Length == 0 || system.Length == 0) return Api.Err(400, "نام گردش کار و سامانه الزامی است");
+    d.Title = title; d.SystemName = system;
+    if (req.Actor != null) d.Actor = Clip(req.Actor, 80);
+    if (req.Role != null) d.Role = Clip(req.Role, 80);
+    if (req.Description != null) d.Description = Clip(req.Description, 500);
     await db.SaveChangesAsync();
-    await Audit.Log(db, ctx, "diagram_renamed", id, new { title });
+    await Audit.Log(db, ctx, "diagram_updated", id, new { title, system });
     return Results.Ok(Dto(d));
 }).RequireAuthorization("Designer");
 
@@ -402,15 +439,30 @@ app.MapGet("/api/public/{token}", async (string token, HttpContext ctx, AppDb db
     if (s is null) return Api.Err(404, "پیوند معتبر نیست یا لغو شده است");
     var d = await db.Diagrams.AsNoTracking().FirstAsync(x => x.Id == s.DiagramId);
     var v = await db.Versions.AsNoTracking().FirstAsync(x => x.DiagramId == s.DiagramId && x.Number == s.VersionNumber);
-    return Results.Ok(new { title = d.Title, number = v.Number, createdAt = v.CreatedAt, author = v.Author, hash = v.ContentHash[..8], xml = v.Xml });
+    return Results.Ok(new { title = d.Title, system = d.SystemName, number = v.Number, createdAt = v.CreatedAt, author = v.Author, hash = v.ContentHash[..8], xml = v.Xml, style = await StyleStore.Load(db) });
 }).AllowAnonymous().RequireRateLimiting("public");
+
+// ---------- workspace diagram style ----------
+app.MapGet("/api/settings/style", async (AppDb db) => Results.Ok(await StyleStore.Load(db)));
+
+app.MapPut("/api/settings/style", async (DiagramStyle req, HttpContext ctx, AppDb db) =>
+{
+    if (StyleStore.Validate(req) is { } err) return Api.Err(400, err);
+    var json = System.Text.Json.JsonSerializer.Serialize(StyleStore.Merge(req));
+    var row = await db.Settings.FirstOrDefaultAsync(x => x.Key == StyleStore.Key);
+    if (row is null) db.Settings.Add(new AppSetting { Key = StyleStore.Key, Value = json, UpdatedBy = Api.UserName(ctx) });
+    else { row.Value = json; row.UpdatedAt = DateTime.UtcNow; row.UpdatedBy = Api.UserName(ctx); }
+    await db.SaveChangesAsync();
+    await Audit.Log(db, ctx, "style_updated");
+    return Results.Ok(StyleStore.Merge(req));
+}).RequireAuthorization("Designer");
 
 app.Run();
 
 // ---------- helpers ----------
 static object Dto(Diagram d) => new
 {
-    id = d.Id, title = d.Title, description = d.Description, headVersion = d.HeadVersion,
+    id = d.Id, title = d.Title, system = d.SystemName, actor = d.Actor, role = d.Role, description = d.Description, headVersion = d.HeadVersion,
     createdBy = d.CreatedBy, createdAt = d.CreatedAt, updatedBy = d.UpdatedBy, updatedAt = d.UpdatedAt
 };
 

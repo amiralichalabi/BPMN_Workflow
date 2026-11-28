@@ -1,13 +1,18 @@
+# Test setup: the app + a throw-away SQL Server container.
+# For a real SQL Server use docker-compose.prod.yml instead.
 services:
   studio:
     build: .
     ports:
       - "8080:8080"
     environment:
+      ConnectionStrings__Default: "Server=mssql,1433;Database=BpmnStudio;User Id=sa;Password=${SQL_PASSWORD:?set SQL_PASSWORD in .env};TrustServerCertificate=True;Encrypt=True"
       AdminPassword: ${ADMIN_PASSWORD:-}
       BehindProxy: ${BEHIND_PROXY:-false}
-    volumes:
-      - studio-data:/data
+      EmbedOrigins: ${EMBED_ORIGINS:-}
+    depends_on:
+      mssql:
+        condition: service_healthy
     read_only: true
     tmpfs:
       - /tmp
@@ -15,5 +20,22 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${SQL_PASSWORD:?set SQL_PASSWORD in .env}
+      MSSQL_PID: Developer
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q \"SELECT 1\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
 volumes:
-  studio-data: {}
+  mssql-data: {}

@@ -1,0 +1,34 @@
+name: windows-exe
+on:
+  workflow_dispatch: {}
+  push:
+    tags: ['v*']
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: 10.0.x }
+      - name: Fetch editor bundle and Vazirmatn font
+        shell: bash
+        run: |
+          A="$RUNNER_TEMP/assets"; mkdir -p "$A" && cd "$A"
+          npm init -y > /dev/null
+          npm install bpmn-js@17.11.1 vazirmatn --ignore-scripts --no-audit --no-fund
+          L="$GITHUB_WORKSPACE/api/wwwroot/lib"
+          mkdir -p "$L/17.11.1" "$L/fonts"
+          cp node_modules/bpmn-js/dist/bpmn-modeler.production.min.js node_modules/bpmn-js/dist/bpmn-navigated-viewer.production.min.js "$L/17.11.1/"
+          cp -r node_modules/bpmn-js/dist/assets "$L/17.11.1/assets"
+          find node_modules/vazirmatn -name 'Vazirmatn*.woff2' -exec cp {} "$L/fonts/" \;
+      - name: Publish self-contained Windows build
+        run: dotnet publish api/BpmnStudio.csproj -c Release -r win-x64 --self-contained true -o publish
+      - name: Add readme
+        shell: bash
+        run: cp scripts/README-WINDOWS.txt publish/README-WINDOWS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BpmnStudio-win-x64
+          path: publish

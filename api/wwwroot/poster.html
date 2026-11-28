@@ -10,19 +10,24 @@
 <link rel="stylesheet" href="/lib/17.11.1/assets/bpmn-font/css/bpmn.css">
 <link rel="stylesheet" href="/style.css">
 </head>
-<body>
-<div class="poster">
-  <div class="tools">
+<body class="posterbody">
+<div class="poster" id="poster">
+  <div class="ptools">
     <button class="btn small" id="b-print">چاپ / PDF</button>
     <button class="btn small" id="b-svg">SVG</button>
     <button class="btn small" id="b-png">PNG</button>
     <button class="btn small" id="b-full">تمام‌صفحه</button>
   </div>
-  <header><h1 id="title">…</h1><div class="info" id="info"></div></header>
+  <header>
+    <div class="sys" id="sys" hidden></div>
+    <h1 id="title">…</h1>
+    <div class="info" id="info"></div>
+  </header>
   <div class="canvas" id="canvas"></div>
-  <section class="legend"><h2>راهنمای علامت‌ها (استاندارد BPMN 2.0)</h2><div class="lv" id="legend"></div></section>
+  <section class="legend"><h2>راهنمای علامت‌ها (استاندارد BPMN 2.0)</h2><div class="lgrid" id="legend"></div></section>
 </div>
 <script src="/lib/17.11.1/bpmn-navigated-viewer.production.min.js"></script>
+<script src="/studio-module.js"></script>
 <script src="/common.js"></script>
 <script src="/poster.js"></script>
 </body>
